@@ -1,16 +1,21 @@
 import rclpy
-from .ros_interface import RosInterfaceNode
+from .ros_interface import ControlNode
 
-def main():
-    rclpy.init()
-    node = RosInterfaceNode()
+def main(args=None):
+    """
+    Main entry point for the control node.
+    """
+    rclpy.init(args=args)
+    
+    control_node = ControlNode()
+    
     try:
-        rclpy.spin(node)
+        rclpy.spin(control_node)
     except KeyboardInterrupt:
         pass
     finally:
-        node.destroy_node()
+        control_node.destroy_node()
         rclpy.shutdown()
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
