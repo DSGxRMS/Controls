@@ -22,11 +22,13 @@ class ControlTester(Node):
         super().__init__('control_tester')
         
         # Parameters
-        self.declare_parameter('test_mode', 'moving')  # 'stationary', 'moving', 'path'
-        self.declare_parameter('test_duration', 10.0)  # seconds
+        self.declare_parameter('test_duration', 50.0)  # seconds
+        self.declare_parameter('acceleration', 5.0)  # m/s²
+        self.declare_parameter('steering_angle', 0.1)  # radians
         
-        self.test_mode = self.get_parameter('test_mode').get_parameter_value().string_value
         self.test_duration = self.get_parameter('test_duration').get_parameter_value().double_value
+        self.acceleration = self.get_parameter('acceleration').get_parameter_value().double_value
+        self.steering_angle = self.get_parameter('steering_angle').get_parameter_value().double_value
         
         # QoS
         qos = QoSProfile(
@@ -37,6 +39,7 @@ class ControlTester(Node):
         
         # Publishers
         self.odom_pub = self.create_publisher(Odometry, '/odom', qos)
+        self.cmd_pub = self.create_publisher(AckermannDriveStamped, '/cmd', 10)
         
         # Subscribers to monitor control output
         self.create_subscription(AckermannDriveStamped, '/cmd', self._cmd_cb, 10)
@@ -46,10 +49,10 @@ class ControlTester(Node):
         self.cmd_received = False
         self.last_cmd = None
         
-        # Timer for publishing test odometry
-        self.timer = self.create_timer(0.02, self._publish_test_odom)  # 50 Hz
+        # Timer for publishing test odometry and commands
+        self.timer = self.create_timer(0.02, self._publish_test_data)  # 50 Hz
         
-        self.get_logger().info(f"Starting control test in '{self.test_mode}' mode for {self.test_duration} seconds")
+        self.get_logger().info(f"Starting control test for moving mode with {self.acceleration} m/s² acceleration and {self.steering_angle} rad steering for {self.test_duration} seconds")
 
     def _cmd_cb(self, msg: AckermannDriveStamped):
         """Monitor control commands"""
@@ -61,8 +64,8 @@ class ControlTester(Node):
             f"accel={msg.drive.acceleration:.3f} m/s², speed={msg.drive.speed:.3f} m/s"
         )
 
-    def _publish_test_odom(self):
-        """Publish test odometry data"""
+    def _publish_test_data(self):
+        """Publish test odometry data and control commands"""
         current_time = time.time()
         elapsed = current_time - self.start_time
         
@@ -71,6 +74,29 @@ class ControlTester(Node):
             rclpy.shutdown()
             return
         
+        # Publish control commands
+        self._publish_control_commands()
+        
+        # Publish test odometry for moving scenario
+        self._publish_moving_odom(elapsed)
+
+    def _publish_control_commands(self):
+        """Publish acceleration and steering commands"""
+        cmd_msg = AckermannDriveStamped()
+        cmd_msg.header = Header()
+        cmd_msg.header.stamp = self.get_clock().now().to_msg()
+        cmd_msg.header.frame_id = 'base_link'
+        
+        # Set acceleration and steering commands
+        cmd_msg.drive.acceleration = self.acceleration  # 5 m/s²
+        cmd_msg.drive.steering_angle = self.steering_angle  # steering command
+        cmd_msg.drive.speed = 0.0  # Let acceleration control the speed
+        
+        # Publish command
+        self.cmd_pub.publish(cmd_msg)
+
+    def _publish_moving_odom(self, elapsed):
+        """Publish odometry data for moving scenario"""
         # Create odometry message
         odom = Odometry()
         odom.header = Header()
@@ -78,28 +104,16 @@ class ControlTester(Node):
         odom.header.frame_id = 'odom'
         odom.child_frame_id = 'base_link'
         
-        if self.test_mode == 'stationary':
-            # Vehicle at origin, not moving
-            x, y, yaw = 0.0, 0.0, 0.0
-            vx, vy, vyaw = 0.0, 0.0, 0.0
-            
-        elif self.test_mode == 'moving':
-            # Vehicle moving in a straight line
-            x = elapsed * 1.0  # 1 m/s forward
-            y = 0.0
-            yaw = 0.0
-            vx, vy, vyaw = 1.0, 0.0, 0.0
-            
-        elif self.test_mode == 'path':
-            # Vehicle following a circular path
-            radius = 5.0
-            angular_vel = 0.2  # rad/s
-            x = radius * math.sin(angular_vel * elapsed)
-            y = radius * (1.0 - math.cos(angular_vel * elapsed))
-            yaw = angular_vel * elapsed
-            vx = radius * angular_vel * math.cos(angular_vel * elapsed)
-            vy = radius * angular_vel * math.sin(angular_vel * elapsed)
-            vyaw = angular_vel
+        # Vehicle moving with acceleration
+        # Using kinematic equations: x = 0.5 * a * t^2 (starting from rest)
+        x = 0.5 * self.acceleration * elapsed * elapsed
+        y = 0.0
+        yaw = 0.0
+        
+        # Velocity: v = a * t
+        vx = self.acceleration * elapsed
+        vy = 0.0
+        vyaw = 0.0
         
         # Set position
         odom.pose.pose.position = Point(x=x, y=y, z=0.0)
@@ -131,7 +145,9 @@ class ControlTester(Node):
         else:
             self.get_logger().error("✗ No control commands received - CHECK YOUR CONTROL NODE!")
         
-        self.get_logger().info(f"Test mode: {self.test_mode}")
+        self.get_logger().info(f"Test mode: moving")
+        self.get_logger().info(f"Acceleration command: {self.acceleration} m/s²")
+        self.get_logger().info(f"Steering command: {self.steering_angle} rad")
         self.get_logger().info(f"Test duration: {self.test_duration:.1f} seconds")
         self.get_logger().info("=" * 50)
 

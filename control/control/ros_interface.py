@@ -2,17 +2,16 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSHistoryPolicy, QoSReliabilityPolicy
 import time
-import math
-import numpy as np
-import pandas as pd
+import transforms3d.euler as tft
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Twist
 from ackermann_msgs.msg import AckermannDriveStamped
-import transforms3d.euler as tft
-from control.controls_functions import *
 
+from .path_manager import PathManager
+from .controller import ControlAlgorithm
+from .control_utils import startup_control, MAX_STEER_RAD, AX_MAX, AX_MIN
 
-class ControlNode(Node):
+class RosInterfaceNode(Node):
     def __init__(self):
         super().__init__('control_node', automatically_declare_parameters_from_overrides=True)
 
@@ -32,18 +31,19 @@ class ControlNode(Node):
         self.odom_topic = self.get_parameter('odom_topic').get_parameter_value().string_value
         self.cmd_topic = self.get_parameter('cmd_topic').get_parameter_value().string_value
         self.mode = self.get_parameter('mode').get_parameter_value().string_value.lower()
-        self.path_csv = self.get_parameter('path_csv').get_parameter_value().string_value
-        self.scaling_factor = float(self.get_parameter('scaling_factor').get_parameter_value().double_value)
-        self.loop = self.get_parameter('loop').get_parameter_value().bool_value
+        path_csv = self.get_parameter('path_csv').get_parameter_value().string_value
+        scaling_factor = float(self.get_parameter('scaling_factor').get_parameter_value().double_value)
+        loop = self.get_parameter('loop').get_parameter_value().bool_value
         self.best_effort = self.get_parameter('qos_best_effort').get_parameter_value().bool_value
         self.hz = float(self.get_parameter('hz').get_parameter_value().double_value)
-        self.path_offset_x = float(self.get_parameter('path_offset_x').get_parameter_value().double_value)
-        self.path_offset_y = float(self.get_parameter('path_offset_y').get_parameter_value().double_value)
+        path_offset_x = float(self.get_parameter('path_offset_x').get_parameter_value().double_value)
+        path_offset_y = float(self.get_parameter('path_offset_y').get_parameter_value().double_value)
         self.enable_startup_mode = self.get_parameter('enable_startup_mode').get_parameter_value().bool_value
 
         # ---- Load path and initialize controller ----
         try:
-            self.controller = self.load_path(self.path_csv, self.scaling_factor, self.loop)
+            path_manager = PathManager(path_csv, scaling_factor, loop, path_offset_x, path_offset_y)
+            self.controller = ControlAlgorithm(path_manager)
             self.get_logger().info(f"Successfully loaded path with {len(self.controller.xs)} points")
         except Exception as e:
             self.get_logger().error(f"Failed to load path: {e}")
@@ -83,42 +83,10 @@ class ControlNode(Node):
 
         self.get_logger().info(
             f"[control_node] odom={self.odom_topic} -> {self.mode}@{self.cmd_topic} "
-            f"(path={self.path_csv}, loop={self.loop}, scaling={self.scaling_factor}, "
-            f"offset=({self.path_offset_x}, {self.path_offset_y}), "
+            f"(path={path_csv}, loop={loop}, scaling={scaling_factor}, "
+            f"offset=({path_offset_x}, {path_offset_y}), "
             f"{'BEST_EFFORT' if self.best_effort else 'RELIABLE'}, {self.hz:.1f}Hz)"
         )
-
-    def load_path(self, csv_path, scaling_factor, loop):
-        """
-        Load and preprocess path from CSV.
-
-        Args:
-            csv_path (str): Path to CSV file
-            scaling_factor (float): Scaling factor
-            loop (bool): Whether path is a loop
-
-        Returns:
-            ControlAlgorithm: Initialized control algorithm
-        """
-        df = pd.read_csv(csv_path)
-        
-        # Apply scaling
-        x_scaled = df["x"].to_numpy() * scaling_factor
-        y_scaled = df["y"].to_numpy() * scaling_factor
-        
-        # Resample track
-        rx, ry = resample_track(x_scaled, y_scaled)
-        
-        # Apply coordinate transformation and offsets
-        # Original transformation: route_x, route_y = ry + 15.0, -rx
-        # Fixed transformation to align with vehicle start position
-        route_x = rx + self.path_offset_x  # Use configurable offset instead of hardcoded 15.0
-        route_y = ry + self.path_offset_y
-        
-        self.get_logger().info(f"Path bounds: x=[{route_x.min():.2f}, {route_x.max():.2f}], "
-                              f"y=[{route_y.min():.2f}, {route_y.max():.2f}]")
-        
-        return ControlAlgorithm(route_x, route_y, loop=loop)
 
     def _odom_cb(self, msg: Odometry):
         """
@@ -253,19 +221,3 @@ class ControlNode(Node):
         Publish zero control commands (safe stop).
         """
         self._publish_commands(0.0, 0.0, 0.0, 0.0)
-
-
-def main():
-    rclpy.init()
-    node = ControlNode()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
-
-
-if __name__ == "__main__":
-    main()
