@@ -1,8 +1,9 @@
+
 import time
 import math
 import numpy as np
 import pandas as pd
-from scipy.interpolate import splprep, splev
+# Removed scipy spline imports - using linear interpolation instead
 
 # Vehicle and control parameters
 SEARCH_BACK = 10
@@ -30,11 +31,15 @@ BRAKE_GAIN = 0.7
 STOP_SPEED_THRESHOLD = 0.1   # m/s, vehicle considered stopped
 
 # Jerk-limited velocity profile params (from Controls_final.m)
-V_MIN = 5.0          # m/s
+V_MIN = 0.5          # m/s (reduced to allow gentle startup)
 A_MAX = 15.0         # m/s^2
 D_MAX = 20.0         # m/s^2 (max decel)
 J_MAX = 70.0         # m/s^3
 CURVATURE_MAX = 0.9  # 1/m
+
+# Startup parameters
+STARTUP_THROTTLE = 0.3  # Initial throttle for getting vehicle moving
+MIN_STARTUP_SPEED = 0.1  # m/s - minimum speed to consider vehicle started
 
 # Utility Functions
 def preprocess_path(xs, ys, loop=True):
@@ -151,7 +156,7 @@ def pure_pursuit_steer(pos_xy, yaw, speed, xs, ys, near_idx, s, total_len, loop=
 
 def resample_track(x_raw, y_raw, num_arc_points=NUM_ARC_POINTS):
     """
-    Resample track to uniform arc length.
+    Resample track to uniform arc length using linear interpolation.
 
     Args:
         x_raw, y_raw (arrays): Raw coordinates
@@ -160,13 +165,45 @@ def resample_track(x_raw, y_raw, num_arc_points=NUM_ARC_POINTS):
     Returns:
         tuple: (resampled_x, resampled_y)
     """
-    tck, _ = splprep([x_raw, y_raw], s=0, k=min(3, max(1, len(x_raw) - 1)))
-    tt_dense = np.linspace(0, 1, 2000)
-    xx, yy = splev(tt_dense, tck)
-    s_dense = np.concatenate(([0.0], np.cumsum(np.hypot(np.diff(xx), np.diff(yy)))))
-    s_dense /= s_dense[-1] if s_dense[-1] > 0 else 1.0
-    s_uniform = np.linspace(0, 1, num_arc_points)
-    return np.interp(s_uniform, s_dense, xx), np.interp(s_uniform, s_dense, yy)
+    x_raw = np.asarray(x_raw, dtype=float)
+    y_raw = np.asarray(y_raw, dtype=float)
+    
+    # Remove duplicate/near-duplicate points
+    if len(x_raw) > 1:
+        dx = np.diff(x_raw)
+        dy = np.diff(y_raw)
+        distances = np.hypot(dx, dy)
+        # Keep first point and points with sufficient distance from previous
+        keep = np.concatenate(([True], distances > 1e-6))
+        x_filtered = x_raw[keep]
+        y_filtered = y_raw[keep]
+    else:
+        x_filtered, y_filtered = x_raw, y_raw
+    
+    if len(x_filtered) < 2:
+        raise ValueError(f"Insufficient points for interpolation: {len(x_filtered)}")
+    
+    # Calculate cumulative distances along the path
+    dx = np.diff(x_filtered)
+    dy = np.diff(y_filtered)
+    segment_lengths = np.hypot(dx, dy)
+    cumulative_distances = np.concatenate(([0.0], np.cumsum(segment_lengths)))
+    
+    # Normalize to [0, 1]
+    total_length = cumulative_distances[-1]
+    if total_length > 0:
+        normalized_distances = cumulative_distances / total_length
+    else:
+        normalized_distances = np.linspace(0, 1, len(x_filtered))
+    
+    # Create uniform spacing in normalized distance
+    uniform_distances = np.linspace(0, 1, num_arc_points)
+    
+    # Interpolate x and y coordinates
+    x_resampled = np.interp(uniform_distances, normalized_distances, x_filtered)
+    y_resampled = np.interp(uniform_distances, normalized_distances, y_filtered)
+    
+    return x_resampled, y_resampled
 
 def compute_signed_curvature(x, y):
     """
@@ -346,6 +383,28 @@ def cross_track_error(cx, cy, xs, ys, idx, loop=True):
     dy = cy - ys[idx]
     e_lat = -math.sin(theta_ref) * dx + math.cos(theta_ref) * dy
     return e_lat, theta_ref
+
+def startup_control(speed, target_speed=2.0):
+    """
+    Generate startup control commands to get vehicle moving from standstill.
+    
+    Args:
+        speed (float): Current speed
+        target_speed (float): Target speed for startup
+        
+    Returns:
+        tuple: (throttle, brake, is_started)
+    """
+    if speed < MIN_STARTUP_SPEED:
+        # Vehicle is essentially stopped, apply startup throttle
+        return STARTUP_THROTTLE, 0.0, False
+    elif speed < target_speed:
+        # Vehicle is moving but below target, continue accelerating
+        throttle = min(0.5, STARTUP_THROTTLE * (target_speed - speed) / target_speed)
+        return max(0.1, throttle), 0.0, False
+    else:
+        # Vehicle has reached startup speed
+        return 0.0, 0.0, True
 
 class ControlAlgorithm:
     """

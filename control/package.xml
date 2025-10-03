@@ -13,7 +13,8 @@
   <depend>math</depend>
   <depend>pandas</depend>
   <depend>scipy</depend>
-  <depend>tf</depend>
+  <depend>transforms3d</depend>
+  <depend>controls_functions</depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

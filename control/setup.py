@@ -20,7 +20,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'run_control = control.ros_bag_control:main'
+            'run_control = control.ros_bag_control:main',
+            'test_control = control.test_control:main'
         ],
     },
 )
