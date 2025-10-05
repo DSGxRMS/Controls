@@ -39,4 +39,5 @@ class ROSInterface(Node):
             msg.drive.acceleration = accel
         if speed is not None:
             msg.drive.speed = speed
+        self.get_logger().info(f"Sending command: Steer={steering:.2f}, Speed={speed}, Accel={accel}")
         self.pub.publish(msg)
