@@ -6,33 +6,36 @@ import pandas as pd
 from control.ros_connect import ROSInterface
 from control.control_utils import *
 
-# Path / scenario constants (keep these here if you like)
-
+# Path / scenario constants
 PATHPOINTS_CSV = "/root/rosws/ctrl_main/src/control/control/pathpoints.csv"
 ROUTE_IS_LOOP = False
 scaling_factor = 1
 
-# Controller / vehicle params (also mirrored in control_utils for safety)
-
+# Controller / vehicle params
 WHEELBASE_M = 1.5
 MAX_STEER_RAD = 1 # 10 degrees
 
 PROFILE_WINDOW_M = 100.0
 PROFILE_HZ = 10
 BRAKE_GAIN = 0.7
-STOP_SPEED_THRESHOLD = 0.1   # m/s, vehicle considered stopped
+STOP_SPEED_THRESHOLD = 0.1   # m/s
 
-# Jerk-limited velocity profile params (passed into the utility)
-
-V_MIN = 2.0          # Lower minimum for tight turns
+# Jerk-limited velocity profile params
+V_MIN = 4.0          # Lower minimum for tight turns
 V_MAX = 8.0          # m/s
 A_MAX = 15.0         # m/s^2
-D_MAX = 20.0         # m/s^2 (max decel)
+D_MAX = 20.0         # m/s^2
 J_MAX = 70.0         # m/s^3
 
 # Pure pursuit velocity limiting
 STEER_SPEED_LIMIT_FACTOR = 0.5  # Factor to reduce speed based on steering angle
-MAX_STEER_FOR_SPEED_LIMIT = 0.3  # Maximum steering angle where speed limiting starts
+MAX_STEER_FOR_SPEED_LIMIT = 0.3  # Radians where speed limiting starts
+STEER_RATE_THRESHOLD = 0.5       # Steering rate (rad/s) where additional speed limiting starts
+STEER_RATE_FACTOR = 0.2          # How much to reduce speed based on steering rate
+
+# Multi-point curvature parameters
+CURVATURE_SAMPLE_POINTS = 8      # Number of points to sample for curvature
+CURVATURE_LOOKAHEAD_FACTOR = 0.3 # How far ahead to look (fraction of profile window)
 
 def main():
     rclpy.init()
@@ -64,7 +67,8 @@ def main():
     cur_idx = 0
     last_t = time.perf_counter()
     last_profile_t = last_t
-
+    prev_steering = 0.0  # For steering rate calculation
+    
     input("Press Enter to start...")
 
     while rclpy.ok():
@@ -89,42 +93,66 @@ def main():
             tgt_idx = forward_index_by_distance(cur_idx, Ld, route_s, route_len, ROUTE_IS_LOOP)
             
             # Calculate pure pursuit path curvature from current position to lookahead point
-            # We'll use the arc that pure pursuit would follow
             dx = route_x[tgt_idx] - cx
             dy = route_y[tgt_idx] - cy
             look_ahead_distance = math.sqrt(dx*dx + dy*dy)
             
             # Calculate the curvature of the pure pursuit arc
             # This is an approximation based on the cross-track error and look-ahead distance
-            _, path_yaw = cross_track_error(cx, cy, route_x, route_y, cur_idx, loop=ROUTE_IS_LOOP)
-            path_yaw = path_heading(route_x, route_y, cur_idx, loop=ROUTE_IS_LOOP)  # Get actual path heading
+            e_lat, _ = cross_track_error(cx, cy, route_x, route_y, cur_idx, loop=ROUTE_IS_LOOP)
+            path_yaw = path_heading(route_x, route_y, cur_idx, loop=ROUTE_IS_LOOP)
             
-            # Calculate vehicle heading relative to path
+            # Calculate heading error
             heading_error = yaw - path_yaw
-            # Normalize to [-pi, pi]
             heading_error = math.atan2(math.sin(heading_error), math.cos(heading_error))
             
-            # Calculate cross-track error
-            e_lat, _ = cross_track_error(cx, cy, route_x, route_y, cur_idx, loop=ROUTE_IS_LOOP)
-            
-            # Pure pursuit curvature approximation: kappa = 2 * cross_track_error / (look_ahead_distance^2)
-            if look_ahead_distance > 0.1:  # Avoid division by zero
+            # Calculate pure pursuit curvature approximation
+            if look_ahead_distance > 0.1:
                 pp_curvature = 2.0 * e_lat / (look_ahead_distance * look_ahead_distance)
                 pp_curvature = max(-CURVATURE_MAX, min(CURVATURE_MAX, pp_curvature))
             else:
                 pp_curvature = 0.0
             
-            # Calculate safe speed based on pure pursuit path curvature
-            pp_safe_speed = ackermann_curv_speed_limit(np.array([pp_curvature]), wheelbase=WHEELBASE_M, v_max=V_MAX, d_max=D_MAX)[0]
+            # --- Multi-Point Curvature Calculation ---
+            # Sample multiple points along the path to get a more accurate speed limit
+            curvature_sample_points = []
+            curvature_lookahead = min(PROFILE_WINDOW_M * CURVATURE_LOOKAHEAD_FACTOR, PROFILE_WINDOW_M)
             
-            # Also consider the original path curvature
-            path_curvature = kappa_signed[cur_idx]
-            path_safe_speed = ackermann_curv_speed_limit(np.array([path_curvature]), wheelbase=WHEELBASE_M, v_max=V_MAX, d_max=D_MAX)[0]
+            # Get indices for sampling points
+            for i in range(CURVATURE_SAMPLE_POINTS):
+                fraction = i / (CURVATURE_SAMPLE_POINTS - 1)
+                sample_dist = fraction * curvature_lookahead
+                sample_idx = forward_index_by_distance(cur_idx, sample_dist, route_s, route_len, ROUTE_IS_LOOP)
+                curvature_sample_points.append(sample_idx)
             
-            # Use the more conservative speed (minimum of both)
-            conservative_speed_limit = min(pp_safe_speed, path_safe_speed)
+            # Find the most conservative speed limit from these points
+            conservative_speed_limit = V_MAX
+            for idx in curvature_sample_points:
+                # Calculate speed limit for pure pursuit path curvature at this point
+                if idx != cur_idx:
+                    # Get cross track error at this point
+                    e_lat_sample, _ = cross_track_error(route_x[idx], route_y[idx], route_x, route_y, cur_idx, loop=ROUTE_IS_LOOP)
+                    # Calculate look ahead distance for this point (simplified)
+                    sample_lookahead = calc_lookahead(speed)
+                    if sample_lookahead > 0.1:
+                        pp_curvature_sample = 2.0 * e_lat_sample / (sample_lookahead * sample_lookahead)
+                        pp_curvature_sample = max(-CURVATURE_MAX, min(CURVATURE_MAX, pp_curvature_sample))
+                    else:
+                        pp_curvature_sample = 0.0
+                    
+                    pp_safe_speed = ackermann_curv_speed_limit(np.array([pp_curvature_sample]), 
+                                                              wheelbase=WHEELBASE_M, v_max=V_MAX, d_max=D_MAX)[0]
+                    
+                    # Also consider the original path curvature
+                    path_curvature = kappa_signed[idx]
+                    path_safe_speed = ackermann_curv_speed_limit(np.array([path_curvature]), 
+                                                               wheelbase=WHEELBASE_M, v_max=V_MAX, d_max=D_MAX)[0]
+                    
+                    # Take the minimum speed limit
+                    point_speed_limit = min(pp_safe_speed, path_safe_speed)
+                    conservative_speed_limit = min(conservative_speed_limit, point_speed_limit)
             
-            # Create a window for velocity profile calculation based on pure pursuit considerations
+            # Create a window for velocity profile calculation
             end_idx = forward_index_by_distance(cur_idx, PROFILE_WINDOW_M, route_s, route_len, ROUTE_IS_LOOP)
 
             if ROUTE_IS_LOOP:
@@ -170,14 +198,30 @@ def main():
         steer_correction = steer_pid.update(e_lat, dt)
         steering_cmd = max(-1.0, min(1.0, steering_ppc + steer_correction))
         
-        # Apply steering-based velocity limiting
+        # --- Steering Rate Consideration ---
+        # Calculate how fast steering is changing
+        steering_rate = abs(steering_cmd * MAX_STEER_RAD - prev_steering) / max(dt, 0.001)
+        prev_steering = steering_cmd * MAX_STEER_RAD  # Update for next iteration
+        
+        # Apply steering rate-based speed limiting
+        steering_rate_factor = 1.0
+        if steering_rate > STEER_RATE_THRESHOLD:
+            # Reduce speed more aggressively for higher steering rates
+            rate_reduction = (steering_rate - STEER_RATE_THRESHOLD) * STEER_RATE_FACTOR
+            steering_rate_factor = max(0.1, 1.0 - rate_reduction)
+        
+        # Apply steering angle-based velocity limiting
         abs_steering = abs(steering_cmd * MAX_STEER_RAD)
         if abs_steering > MAX_STEER_FOR_SPEED_LIMIT:
             # Reduce speed based on steering angle
             steering_factor = max(0.1, 1.0 - (abs_steering - MAX_STEER_FOR_SPEED_LIMIT) * STEER_SPEED_LIMIT_FACTOR)
-            limited_speed = route_v[cur_idx] * steering_factor
+            angle_factor = steering_factor
         else:
-            limited_speed = route_v[cur_idx]
+            angle_factor = 1.0
+        
+        # Combine both limiting factors
+        speed_limit_factor = min(steering_rate_factor, angle_factor)
+        limited_speed = route_v[cur_idx] * speed_limit_factor
 
         # --- Longitudinal control ---
         v_err = limited_speed - speed
@@ -188,10 +232,8 @@ def main():
             th_pid.reset()
             throttle, brake = 0.0, min(1.0, -v_err * BRAKE_GAIN)
 
-        # --- Send command to ROS --- (steering in radians, speed in m/s)
-        desired_speed = limited_speed
-        # If you want to send acceleration instead of speed modify ROSInterface send_command to accept accel.
-        node.send_command(steering_cmd * MAX_STEER_RAD, speed=desired_speed, accel=throttle - brake)
+        # --- Send command to ROS ---
+        node.send_command(steering_cmd * MAX_STEER_RAD, speed=limited_speed, accel=throttle - brake)
 
         # --- Exit condition ---
         if (not ROUTE_IS_LOOP) and cur_idx >= len(route_x) - 1 and speed < STOP_SPEED_THRESHOLD:
