@@ -5,9 +5,9 @@ import numpy as np
 import pandas as pd
 from control.ros_connect import ROSInterface
 from control.control_utils import *
-
+from pathlib import Path
 # Path / scenario constants
-PATHPOINTS_CSV = "/root/rosws/ctrl_main/src/control/control/pathpoints.csv"
+PATHPOINTS_CSV = Path(__file__).parent / "pathpoints.csv"
 ROUTE_IS_LOOP = False
 scaling_factor = 1
 
