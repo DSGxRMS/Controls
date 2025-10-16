@@ -16,7 +16,7 @@ WHEELBASE_M = 1.5
 MAX_STEER_RAD = 1 # 10 degrees
 
 PROFILE_WINDOW_M = 100.0
-PROFILE_HZ = 10
+PROFILE_HZ = 20
 BRAKE_GAIN = 0.7
 STOP_SPEED_THRESHOLD = 0.1   # m/s
 
@@ -240,7 +240,7 @@ def main():
             print("Reached end of route and stopped. Exiting loop.")
             break
 
-        time.sleep(0.02)
+        time.sleep(0.005)
 
     rclpy.shutdown()
 

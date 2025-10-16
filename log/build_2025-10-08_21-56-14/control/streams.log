@@ -1,0 +1,18 @@
+[0.482s] Invoking command in '/home/armaanm/eufs_dev/Controls/build/control': PYTHONPATH=/home/armaanm/eufs_dev/Controls/build/control/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/armaanm/eufs_dev/Controls/install/control/lib/python3.8/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/armaanm/eufs_dev/Controls/build/control/build --no-deps symlink_data
+[0.651s] running develop
+[0.744s] running egg_info
+[0.744s] writing control.egg-info/PKG-INFO
+[0.744s] writing dependency_links to control.egg-info/dependency_links.txt
+[0.744s] writing entry points to control.egg-info/entry_points.txt
+[0.745s] writing requirements to control.egg-info/requires.txt
+[0.745s] writing top-level names to control.egg-info/top_level.txt
+[0.763s] reading manifest file 'control.egg-info/SOURCES.txt'
+[0.763s] writing manifest file 'control.egg-info/SOURCES.txt'
+[0.784s] running build_ext
+[0.784s] Creating /home/armaanm/eufs_dev/Controls/install/control/lib/python3.8/site-packages/control.egg-link (link to .)
+[0.785s] Installing run_control script to /home/armaanm/eufs_dev/Controls/install/control/lib/control
+[0.785s] Installing test_control script to /home/armaanm/eufs_dev/Controls/install/control/lib/control
+[0.785s] 
+[0.785s] Installed /home/armaanm/eufs_dev/Controls/build/control
+[0.785s] running symlink_data
+[0.807s] Invoked command in '/home/armaanm/eufs_dev/Controls/build/control' returned '0': PYTHONPATH=/home/armaanm/eufs_dev/Controls/build/control/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/armaanm/eufs_dev/Controls/install/control/lib/python3.8/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/armaanm/eufs_dev/Controls/build/control/build --no-deps symlink_data
