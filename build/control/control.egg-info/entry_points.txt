@@ -1,4 +1,0 @@
-[console_scripts]
-run_control = control.control_loop:main
-test_control = control.test_control:main
-
