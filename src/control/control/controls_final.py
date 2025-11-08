@@ -11,8 +11,8 @@ from ackermann_msgs.msg import AckermannDriveStamped
 from std_msgs.msg import Float32MultiArray
 
 # Use your utils exactly as-is
-from ctrl_tap.control_utils import *  # resample_track, preprocess_path, ...
-from ctrl_tap.control_utils import PID, PIDRange
+from Controls.src.control.control.control_utils import *  # resample_track, preprocess_path, ...
+from Controls.src.control.control.control_utils import PID, PIDRange
 
 # -------------------- Parameters --------------------
 ROUTE_IS_LOOP = False
