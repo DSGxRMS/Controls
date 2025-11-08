@@ -85,7 +85,6 @@ class PathFollower(Node):
         self._have_odom = False
         self._have_path = False
         self._cx = self._cy = self._yaw = self._speed = 0.0
-        self._last_odom_t = 0.0
 
         self.route_x = np.array([])
         self.route_y = np.array([])
@@ -148,7 +147,6 @@ class PathFollower(Node):
         self._yaw = quat_to_yaw(q.x, q.y, q.z, q.w)
         self._speed = math.hypot(msg.twist.twist.linear.x, msg.twist.twist.linear.y)
         self._have_odom = True
-        self._last_odom_t = time.time()
 
         pose2d = Pose2D(x=self._cx, y=self._cy, theta=self._yaw)
         self.pub_gt.publish(pose2d)
@@ -161,11 +159,11 @@ class PathFollower(Node):
             return
 
         # Pull state
-        cx, cy, yaw, speed = self._cx, self._cy, self._yaw, self._speed
         st = self.control_state
-        cur_idx, last_t, last_profile_t, prev_steering = (
-            st['cur_idx'], st['last_t'], st['last_profile_t'], st['prev_steering']
-        )
+        cur_idx = st['cur_idx']
+        last_t = st['last_t']
+        last_profile_t = st['last_profile_t']
+        prev_steering = st['prev_steering']
 
         # timing
         now = time.perf_counter()
@@ -173,26 +171,56 @@ class PathFollower(Node):
         last_t = now
 
         # nearest path index (uses your control_utils impl)
-        cur_idx = local_closest_index((cx, cy), self.route_x, self.route_y, cur_idx, loop=ROUTE_IS_LOOP)
+        cur_idx = local_closest_index(
+            (self._cx, self._cy),
+            self.route_x, self.route_y,
+            cur_idx,
+            loop=ROUTE_IS_LOOP
+        )
 
         # ------------------------------------------------------------------
         # KEEP YOUR ORIGINAL CONTROL MATH HERE (unchanged).
         # (You can paste your previous steering + speed computation block.)
-        from ackermann_msgs.msg import AckermannDriveStamped
+        # Compute steering (normalized in [-1, 1]) with your PPC utility
+        steer_norm, tgt_idx = pure_pursuit_steer(
+            (self._cx, self._cy), self._yaw, self._speed,
+            self.route_x, self.route_y,
+            cur_idx, self.route_s, self.route_len,
+            loop=ROUTE_IS_LOOP
+        )
+        # small damping using lateral error PID (output also normalized)
+        e_lat, _ = cross_track_error(self._cx, self._cy, self.route_x, self.route_y, cur_idx, ROUTE_IS_LOOP)
+        steer_correction = self.steer_pid.update(e_lat, dt)
+        steering_norm = float(np.clip(steer_norm + steer_correction, -1.0, 1.0))  # <-- keep NORMALIZED
 
-        cmd = AckermannDriveStamped()
-        cmd.header.stamp = self.get_clock().now().to_msg()
-        cmd.header.frame_id = 'base_link'
+        # Speed target from curvature-based limit
+        desired_speed = float(np.clip(self.route_v[cur_idx], V_MIN, V_MAX))
 
-        cmd.drive.steering_angle = steering  # radians
-        cmd.drive.speed = throttle          # m/s (or however your sim expects speed)
-        # optionally, if your simulator expects acceleration or jerk:
-        # cmd.drive.acceleration = accel
-        # cmd.drive.jerk = jerk
+        # Map normalized steering to radians to match your working reference node
+        steering = steering_norm * MAX_STEER_RAD
 
-        self.pub_cmd.publish(cmd)
+        # Simple accel command to drive toward desired_speed (bounded by A_MAX / D_MAX)
+        speed_error = desired_speed - self._speed
+        accel_cmd = float(np.clip(speed_error, -D_MAX, A_MAX))
+
+        if self.mode == 'ackermann':
+            cmd = AckermannDriveStamped()
+            cmd.header.stamp = self.get_clock().now().to_msg()
+            cmd.header.frame_id = 'base_link'
+            cmd.drive.steering_angle = steering       # radians (matches the working sample)
+            cmd.drive.acceleration   = accel_cmd      # m/s^2  (matches the working sample)
+            # Many interfaces ignore speed when acceleration is provided; safe to omit or leave at 0.0.
+            # cmd.drive.speed = 0.0
+            self.pub_ack.publish(cmd)
+        else:
+            # Twist mode: map desired speed to linear.x, ignore angular here (PPC handles lateral)
+            tw = Twist()
+            tw.linear.x = desired_speed
+            tw.angular.z = 0.0
+            self.pub_twist.publish(tw)
+
         # Example end condition kept from your code:
-        if (not ROUTE_IS_LOOP) and cur_idx >= len(self.route_x) - 1 and speed < STOP_SPEED_THRESHOLD:
+        if (not ROUTE_IS_LOOP) and cur_idx >= len(self.route_x) - 1 and self._speed < STOP_SPEED_THRESHOLD:
             self.get_logger().info("Reached end of route and stopped. Exiting.")
             rclpy.shutdown()
             return
@@ -202,7 +230,7 @@ class PathFollower(Node):
         st['cur_idx'] = cur_idx
         st['last_t'] = last_t
         st['last_profile_t'] = last_profile_t
-        st['prev_steering'] = prev_steering
+        st['prev_steering'] = steering
 
 # ======================================================
 # ENTRY POINT
