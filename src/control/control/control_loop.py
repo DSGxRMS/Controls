@@ -4,7 +4,7 @@ import threading, time, math
 import numpy as np
 import pandas as pd
 from control.ros_connect import ROSInterface
-from control.control_utils import *
+from Controls.src.control.control.control_utils import *
 from pathlib import Path
 # Path / scenario constants
 PATHPOINTS_CSV = Path(__file__).parent / "pathpoints.csv"

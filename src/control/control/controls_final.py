@@ -11,8 +11,8 @@ from ackermann_msgs.msg import AckermannDriveStamped
 from std_msgs.msg import Float32MultiArray
 
 # Use your utils exactly as-is
-from Controls.src.control.control.control_utils import *  # resample_track, preprocess_path, ...
-from Controls.src.control.control.control_utils import PID, PIDRange
+from control.control_utils import *  # resample_track, preprocess_path, ...
+from control.control_utils import PID, PIDRange
 
 # -------------------- Parameters --------------------
 ROUTE_IS_LOOP = False
@@ -178,7 +178,19 @@ class PathFollower(Node):
         # ------------------------------------------------------------------
         # KEEP YOUR ORIGINAL CONTROL MATH HERE (unchanged).
         # (You can paste your previous steering + speed computation block.)
-        #
+        from ackermann_msgs.msg import AckermannDriveStamped
+
+        cmd = AckermannDriveStamped()
+        cmd.header.stamp = self.get_clock().now().to_msg()
+        cmd.header.frame_id = 'base_link'
+
+        cmd.drive.steering_angle = steering  # radians
+        cmd.drive.speed = throttle          # m/s (or however your sim expects speed)
+        # optionally, if your simulator expects acceleration or jerk:
+        # cmd.drive.acceleration = accel
+        # cmd.drive.jerk = jerk
+
+        self.pub_cmd.publish(cmd)
         # Example end condition kept from your code:
         if (not ROUTE_IS_LOOP) and cur_idx >= len(self.route_x) - 1 and speed < STOP_SPEED_THRESHOLD:
             self.get_logger().info("Reached end of route and stopped. Exiting.")
