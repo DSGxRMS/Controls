@@ -13,7 +13,6 @@ from std_msgs.msg import Float32MultiArray
 from ctrl_tap.control_utils import *  # resample_track, preprocess_path, etc.
 from ctrl_tap.control_utils import PID, PIDRange
 
-
 # -------------------- Parameters --------------------
 ROUTE_IS_LOOP = False
 WHEELBASE_M = 1.5
@@ -32,10 +31,12 @@ CURVATURE_SAMPLE_POINTS = 8
 CURVATURE_LOOKAHEAD_FACTOR = 0.3
 CURVATURE_MAX = 0.20
 
+
 def quat_to_yaw(qx, qy, qz, qw):
     siny_cosp = 2.0 * (qw*qz + qx*qy)
     cosy_cosp = 1.0 - 2.0 * (qy*qy + qz*qz)
     return math.atan2(siny_cosp, cosy_cosp)
+
 
 # ======================================================
 # MAIN CLASS
@@ -98,7 +99,7 @@ class PathFollower(Node):
         self.th_pid = PID(3.2, 0.0, 0.0)
         self.steer_pid = PIDRange(kp=0.15, ki=0.05, kd=0.20, out_min=-0.60, out_max=0.60)
 
-        self.control_state = {
+        self.ctrl_state = {
             'cur_idx': 0,
             'last_t': time.perf_counter(),
             'last_profile_t': time.perf_counter(),
@@ -157,9 +158,7 @@ class PathFollower(Node):
         if not (self._have_odom and self._have_path):
             return
 
-        # reuse your original control logic (unchanged core)
         cx, cy, yaw, speed = self._cx, self._cy, self._yaw, self._speed
-        ctx = self.context
         st = self.ctrl_state
         cur_idx, last_t, last_profile_t, prev_steering = (
             st['cur_idx'], st['last_t'], st['last_profile_t'], st['prev_steering']
@@ -172,21 +171,60 @@ class PathFollower(Node):
         # find closest path index
         cur_idx = local_closest_index((cx, cy), self.route_x, self.route_y, cur_idx, loop=ROUTE_IS_LOOP)
 
-        # (rest of the control and publishing logic same as before)
-        # For brevity, reuse your previous _tick() content here; only path arrays changed.
+        # ===============================
+        # --- SIMPLE CONTROL LOGIC ---
+        # ===============================
 
-        # Example end condition
+        # target point lookahead
+        lookahead_dist = 2.0
+        lookahead_idx = min(cur_idx + 5, len(self.route_x) - 1)
+        tx, ty = self.route_x[lookahead_idx], self.route_y[lookahead_idx]
+
+        # compute heading error
+        path_yaw = math.atan2(ty - cy, tx - cx)
+        yaw_error = (path_yaw - yaw + math.pi) % (2 * math.pi) - math.pi
+
+        # steering control (PID)
+        steering = self.steer_pid.update(yaw_error, dt)
+        steering = np.clip(steering, -MAX_STEER_RAD, MAX_STEER_RAD)
+
+        # speed control (simple proportional control)
+        target_speed = V_MAX * (1.0 - min(abs(steering) / MAX_STEER_RAD, 1.0) * STEER_SPEED_LIMIT_FACTOR)
+        throttle = self.th_pid.update(target_speed - speed, dt)
+        throttle = np.clip(throttle, 0.0, V_MAX)
+
+        # ===============================
+        # --- PUBLISH COMMAND ---
+        # ===============================
+        if self.mode == 'ackermann' and self.pub_ack is not None:
+            cmd = AckermannDriveStamped()
+            cmd.header.stamp = self.get_clock().now().to_msg()
+            cmd.header.frame_id = 'base_link'
+            cmd.drive.steering_angle = steering
+            cmd.drive.speed = throttle
+            self.pub_ack.publish(cmd)
+        elif self.pub_twist is not None:
+            cmd = Twist()
+            cmd.linear.x = throttle
+            cmd.angular.z = steering
+            self.pub_twist.publish(cmd)
+
+        # ===============================
+        # --- END CONDITION ---
+        # ===============================
         if (not ROUTE_IS_LOOP) and cur_idx >= len(self.route_x) - 1 and speed < STOP_SPEED_THRESHOLD:
             self.get_logger().info("Reached end of route and stopped. Exiting.")
             rclpy.shutdown()
 
+        # update control state
         st['cur_idx'] = cur_idx
         st['last_t'] = last_t
         st['last_profile_t'] = last_profile_t
-        st['prev_steering'] = prev_steering
+        st['prev_steering'] = steering
+
 
 # ======================================================
-# ENTRY POINT   
+# ENTRY POINT
 # ======================================================
 def main():
     rclpy.init()
@@ -197,6 +235,7 @@ def main():
         pass
     node.destroy_node()
     rclpy.shutdown()
+
 
 if __name__ == "__main__":
     main()
