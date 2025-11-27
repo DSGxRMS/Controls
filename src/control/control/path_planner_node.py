@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import math
-from pathlib import Path
+from pathlib import Path as FilePath  # avoid clash with nav_msgs.msg.Path
 
 import numpy as np
 import rclpy
@@ -18,11 +18,11 @@ class LocalPathPlanner(Node):
 
         # ---- Parameters ----
         # CSV with columns: x,y
-        self.declare_parameter("csv_path", str(Path(__file__).parent / "pathpoints.csv"))
+        self.declare_parameter("csv_path", str(FilePath(__file__).parent / "pathpoints.csv"))
         self.declare_parameter("window_length", 5.0)   # meters
         self.declare_parameter("n_points", 50)         # points in local path
 
-        csv_path = Path(self.get_parameter("csv_path").get_parameter_value().string_value)
+        csv_path = FilePath(self.get_parameter("csv_path").get_parameter_value().string_value)
         self.window_length = float(self.get_parameter("window_length").value)
         self.n_points = int(self.get_parameter("n_points").value)
 
@@ -83,12 +83,10 @@ class LocalPathPlanner(Node):
         s0 = self.s[i0]
         s_max = s0 + self.window_length
         # since s is increasing, we can just search forward
-        # If path is long, you can optimize; this is simple and robust.
         mask = (self.s >= s0) & (self.s <= s_max)
         idxs = np.nonzero(mask)[0]
         # Ensure at least a few points
         if len(idxs) < 4:
-            # extend a bit if needed
             end_idx = min(i0 + 4, len(self.global_x) - 1)
             idxs = np.arange(i0, end_idx + 1)
         return idxs
@@ -146,22 +144,19 @@ class LocalPathPlanner(Node):
         # Extract speed
         vx = msg.twist.twist.linear.x
         vy = msg.twist.twist.linear.y
-        self.speed = math.sqrt(vx*vx + vy*vy)
+        self.speed = math.sqrt(vx * vx + vy * vy)
 
         # Find closest global path index
         i0 = self._closest_index(x, y)
 
         # Find local window of indices ahead of car
         idxs = self._local_window_indices(i0)
-
-        idxs = self._local_window_indices(i0)
         if len(idxs) < 3:
-         return
+            return
 
         x_seg = self.global_x[idxs]
         y_seg = self.global_y[idxs]
         s_seg = self.s[idxs]
-
 
         # Smooth using cubic polynomial
         xs, ys = self._smooth_points_cubic(x_seg, y_seg, s_seg)

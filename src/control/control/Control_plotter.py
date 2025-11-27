@@ -20,7 +20,7 @@ class ControlPlotter(Node):
             Float32MultiArray, '/run_control', self.control_callback, qos_profile_sensor_data
         )
         self.sub_gt_pose = self.create_subscription(
-            Pose2D, '/gt_pose', self.pose_callback, qos_profile_sensor_data
+            Pose2D, '/ground_truth/odom', self.pose_callback, qos_profile_sensor_data
         )
 
         # ---- Data storage ----

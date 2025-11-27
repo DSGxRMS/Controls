@@ -4,7 +4,7 @@ import threading, time, math
 import numpy as np
 
 from control.ros_connect import ROSInterface
-from Controls.src.control.control.control_utils import *
+from control.control_utils import *
 
 # Path / scenario constants
 ROUTE_IS_LOOP = False

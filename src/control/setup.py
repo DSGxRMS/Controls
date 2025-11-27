@@ -21,9 +21,8 @@ setup(
     entry_points={
         'console_scripts': [
             'run_control = control.control_loop:main',
-            'test_control = control.test_control:main',
-            'skidpad_path = control.path_planner_skidpad:main',
-            'controls_final = control.controls_final:main',
+            'control_plotter = control.Control_plotter:main',
+            'path_planner = control.path_planner_node:main',
         ],
     },
 )
