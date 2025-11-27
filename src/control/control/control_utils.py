@@ -9,23 +9,23 @@ from scipy.interpolate import splprep, splev
 # Keep these in sync with controller_main.py if you override them there.
 
 ROUTE_IS_LOOP = False
-SEARCH_BACK = 10
-SEARCH_FWD = 250
-MAX_STEP = 60
+SEARCH_BACK = 5
+SEARCH_FWD = 80
+MAX_STEP = 20
 
 WHEELBASE_M = 1.5
 MAX_STEER_RAD = 0.2
 LD_BASE = 3.5
 LD_GAIN = 0.6
 LD_MIN = 2.0
-LD_MAX = 15.0
+LD_MAX = 8.0
 
 V_MAX = 12.0
 AY_MAX = 4.0
 AX_MAX = 5.0
 AX_MIN = -4.0
 
-PROFILE_WINDOW_M = 100.0
+PROFILE_WINDOW_M = 80.0
 NUM_ARC_POINTS = 800
 PROFILE_HZ = 10
 BRAKE_GAIN = 0.7
