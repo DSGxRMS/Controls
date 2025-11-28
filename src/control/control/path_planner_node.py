@@ -5,6 +5,7 @@ from pathlib import Path as FilePath  # avoid clash with nav_msgs.msg.Path
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, QoSHistoryPolicy, QoSReliabilityPolicy
 
 from nav_msgs.msg import Odometry, Path
 from geometry_msgs.msg import PoseStamped
@@ -40,12 +41,19 @@ class LocalPathPlanner(Node):
         # Precompute cumulative distance along path (s)
         self.s = self._compute_cumulative_s(self.global_x, self.global_y)
 
+        # ---- QoS for ground-truth odom (match EUFSIM: often BEST_EFFORT) ----
+        odom_qos = QoSProfile(
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=10,
+            reliability=QoSReliabilityPolicy.BEST_EFFORT,
+        )
+
         # Subscribe to car odometry (adjust topic if needed for EUFSIM)
         self.odom_sub = self.create_subscription(
             Odometry,
             "/ground_truth/odom",
             self.odom_callback,
-            10,
+            odom_qos,
         )
 
         # Local smoothed path for visualization
