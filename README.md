@@ -21,8 +21,23 @@ source ./install/setup.bash
 
 To execute the control algorithm:
 
+# For Older version
+
 ```bash
 ros2 control run_control
+```
+
+# For Version 2 working with Simulated PathPlanning
+
+First setup the path points publishing node 
+```bash
+ros2 control_v2 pp_publisher 
+```
+
+Then to run the control logic loop run 
+- ⚠️ Only tested for velocity mode 
+```bash
+ros2 run control_v2 control_loop
 ```
 
 ### Testing
