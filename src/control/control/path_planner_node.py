@@ -1,218 +1,234 @@
 #!/usr/bin/env python3
-import math
-from pathlib import Path as FilePath  # avoid clash with nav_msgs.msg.Path
 
-import numpy as np
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, QoSHistoryPolicy, QoSReliabilityPolicy
-
 from nav_msgs.msg import Odometry, Path
 from geometry_msgs.msg import PoseStamped
-from std_msgs.msg import Header
-from std_msgs.msg import Float64MultiArray
+import pandas as pd
+import numpy as np
+import math
+import os
+import sys
 
+# We will implement necessary math inline to ensure this script is self-contained
+# and meets the specific sequential requirement without external dependency behavior.
 
-class LocalPathPlanner(Node):
+class PathPublisher(Node):
     def __init__(self):
-        super().__init__("local_path_planner")
+        super().__init__('pp_publisher')
 
-        # ---- Parameters ----
-        # CSV with columns: x,y
-        self.declare_parameter("csv_path", str(FilePath(__file__).parent / "pathpoints.csv"))
-        self.declare_parameter("window_length", 5.0)   # meters
-        self.declare_parameter("n_points", 50)         # points in local path
+        # Parameters
+        self.declare_parameter('path_file', 'pathpoints_shifted.csv')
+        self.declare_parameter('num_points', 7) # Increased default for better perception viz
+        self.declare_parameter('interval_m', 0.5) 
+        self.declare_parameter('publish_rate', 1.0) # Faster rate for smooth updates
+        self.declare_parameter('loop', False)
 
-        csv_path = FilePath(self.get_parameter("csv_path").get_parameter_value().string_value)
-        self.window_length = float(self.get_parameter("window_length").value)
-        self.n_points = int(self.get_parameter("n_points").value)
+        path_file = self.get_parameter('path_file').get_parameter_value().string_value
+        self.num_points = self.get_parameter('num_points').get_parameter_value().integer_value
+        self.interval_m = self.get_parameter('interval_m').get_parameter_value().double_value
+        publish_rate = self.get_parameter('publish_rate').get_parameter_value().double_value
+        self.is_loop = self.get_parameter('loop').get_parameter_value().bool_value
 
-        self.get_logger().info(f"Loading global path from: {csv_path}")
+        # Resolve path file path
+        if not os.path.isabs(path_file):
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            path_file = os.path.join(base_dir, path_file)
 
-        # ---- Load global path from CSV ----
-        import pandas as pd
-        df = pd.read_csv(csv_path)
-        self.global_x = df["x"].to_numpy(dtype=float)
-        self.global_y = df["y"].to_numpy(dtype=float)
+        self.get_logger().info(f"Loading path from {path_file}")
+        
+        # Load and preprocess path
+        try:
+            df = pd.read_csv(path_file)
+            self.global_rx, self.global_ry = df["x"].to_numpy(), df["y"].to_numpy()
+            self.get_logger().info(f"Path loaded: {len(self.global_rx)} points")
+        except Exception as e:
+            self.get_logger().error(f"Failed to load path: {e}")
+            self.global_rx = []
+            self.global_ry = []
 
-        if len(self.global_x) < 2:
-            raise RuntimeError("Path CSV must contain at least 2 points")
+        # State
+        self.cx = 0.0
+        self.cy = 0.0
+        self.yaw = 0.0
+        self.have_odom = False
+        
+        # INDEX TRACKING
+        self.cur_idx = 0 
+        self.path_initialized = False
 
-        # Precompute cumulative distance along path (s)
-        self.s = self._compute_cumulative_s(self.global_x, self.global_y)
+        # ROS Interfaces
+        self.create_subscription(Odometry, '/ground_truth/odom', self.odom_cb, 10)
+        self.path_pub = self.create_publisher(Path, '/planned_path', 10)
+        self.timer = self.create_timer(1.0/publish_rate, self.timer_cb)
 
-        # ---- QoS for ground-truth odom (match EUFSIM: often BEST_EFFORT) ----
-        odom_qos = QoSProfile(
-            history=QoSHistoryPolicy.KEEP_LAST,
-            depth=10,
-            reliability=QoSReliabilityPolicy.BEST_EFFORT,
-        )
+        # Visualization
+        self.visualize = True
+        if self.visualize:
+            try:
+                import matplotlib.pyplot as plt
+                self.plt = plt
+                self.plt.ion()
+                self.fig, self.ax = self.plt.subplots()
+                self.ax.set_title("Perception Simulation (Local Frame)")
+                self.ax.set_xlabel("x (m)")
+                self.ax.set_ylabel("y (m)")
+                self.ax.grid(True)
+                self.ln, = self.ax.plot([], [], 'ro', label='Planned Path')
+                # Car fixed at origin looking up X
+                self.ax.plot(0, 0, 'k^', markersize=10, label='Ego Car')
+                self.ax.set_xlim(-5, 5)
+                self.ax.set_ylim(-5, 5)
+                self.ax.legend()
+            except ImportError:
+                self.get_logger().warning("Matplotlib not found, visualization disabled")
+                self.visualize = False
 
-        # Subscribe to car odometry (adjust topic if needed for EUFSIM)
-        self.odom_sub = self.create_subscription(
-            Odometry,
-            "/ground_truth/odom",
-            self.odom_callback,
-            odom_qos,
-        )
-
-        # Local smoothed path for visualization
-        self.path_pub = self.create_publisher(Path, "/local_path", 10)
-
-        # Local path points as raw arrays (for your controller)
-        self.points_pub = self.create_publisher(Float64MultiArray, "/local_path_points", 10)
-
-        self.get_logger().info("LocalPathPlanner node initialized.")
-
-    # ------------------------------------------------------------------
-    # Geometry helpers
-    # ------------------------------------------------------------------
-    def _compute_cumulative_s(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
-        """Cumulative arc length along the polyline."""
-        dx = np.diff(x)
-        dy = np.diff(y)
-        ds = np.sqrt(dx * dx + dy * dy)
-        s = np.zeros_like(x)
-        s[1:] = np.cumsum(ds)
-        return s
-
-    def _closest_index(self, x: float, y: float) -> int:
-        """Index of the closest global path point to (x, y)."""
-        dx = self.global_x - x
-        dy = self.global_y - y
-        dist2 = dx * dx + dy * dy
-        return int(np.argmin(dist2))
-
-    def _local_window_indices(self, i0: int) -> np.ndarray:
-        """
-        Get indices of the global path within window_length [m] ahead of i0.
-        Non-looped version.
-        """
-        s0 = self.s[i0]
-        s_max = s0 + self.window_length
-        # since s is increasing, we can just search forward
-        mask = (self.s >= s0) & (self.s <= s_max)
-        idxs = np.nonzero(mask)[0]
-        # Ensure at least a few points
-        if len(idxs) < 4:
-            end_idx = min(i0 + 4, len(self.global_x) - 1)
-            idxs = np.arange(i0, end_idx + 1)
-        return idxs
-
-    def _smooth_points_cubic(self, x_seg: np.ndarray, y_seg: np.ndarray, s_seg: np.ndarray):
-        """
-        Smooth segment using cubic polynomial fits x(s), y(s).
-        Returns dense (xs, ys) along the window.
-        """
-        # Normalize s to start at 0 for better conditioning
-        s0 = s_seg[0]
-        s_norm = s_seg - s0
-        length = s_norm[-1] if s_norm[-1] > 1e-6 else self.window_length
-
-        # Choose evaluation grid
-        s_grid = np.linspace(0.0, length, num=self.n_points)
-
-        # If we have enough points, fit 3rd degree. Otherwise fall back to lower order or raw.
-        if len(s_seg) >= 4:
-            px = np.polyfit(s_norm, x_seg, 3)
-            py = np.polyfit(s_norm, y_seg, 3)
-            xs = np.polyval(px, s_grid)
-            ys = np.polyval(py, s_grid)
-        elif len(s_seg) == 3:
-            px = np.polyfit(s_norm, x_seg, 2)
-            py = np.polyfit(s_norm, y_seg, 2)
-            xs = np.polyval(px, s_grid)
-            ys = np.polyval(py, s_grid)
-        elif len(s_seg) == 2:
-            # simple linear interpolation
-            xs = np.interp(s_grid, s_norm, x_seg)
-            ys = np.interp(s_grid, s_norm, y_seg)
-        else:
-            # single point fallback
-            xs = np.full(self.n_points, x_seg[0])
-            ys = np.full(self.n_points, y_seg[0])
-
-        return xs, ys
-
-    # ------------------------------------------------------------------
-    # Main callback
-    # ------------------------------------------------------------------
-    def odom_callback(self, msg: Odometry):
-        # Extract car position
-        x = msg.pose.pose.position.x
-        y = msg.pose.pose.position.y
-
-        # Extract yaw from quaternion
+    def odom_cb(self, msg):
+        self.cx = msg.pose.pose.position.x
+        self.cy = msg.pose.pose.position.y
+        
         q = msg.pose.pose.orientation
         siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
-        yaw = math.atan2(siny_cosp, cosy_cosp)
-        self.yaw = yaw
+        self.yaw = math.atan2(siny_cosp, cosy_cosp)
+        
+        self.have_odom = True
 
-        # Extract speed
-        vx = msg.twist.twist.linear.x
-        vy = msg.twist.twist.linear.y
-        self.speed = math.sqrt(vx * vx + vy * vy)
+    def get_dist_sq(self, idx):
+        """Helper to get squared distance from car to a path index"""
+        dx = self.cx - self.global_rx[idx]
+        dy = self.cy - self.global_ry[idx]
+        return dx**2 + dy**2
 
-        # Find closest global path index
-        i0 = self._closest_index(x, y)
-
-        # Find local window of indices ahead of car
-        idxs = self._local_window_indices(i0)
-        if len(idxs) < 3:
+    def timer_cb(self):
+        if not self.have_odom or len(self.global_rx) == 0:
             return
 
-        x_seg = self.global_x[idxs]
-        y_seg = self.global_y[idxs]
-        s_seg = self.s[idxs]
+        # --- INITIALIZATION ---
+        # If this is the first run, we do a one-time global search to find 
+        # where the car started.
+        if not self.path_initialized:
+            min_dist = float('inf')
+            best_idx = 0
+            # Search entire array once
+            for i in range(len(self.global_rx)):
+                d = self.get_dist_sq(i)
+                if d < min_dist:
+                    min_dist = d
+                    best_idx = i
+            self.cur_idx = best_idx
+            self.path_initialized = True
 
-        # Smooth using cubic polynomial
-        xs, ys = self._smooth_points_cubic(x_seg, y_seg, s_seg)
+        # --- SEQUENTIAL TRACKING LOGIC ---
+        # Instead of searching the whole array (which causes jumps), 
+        # we check if the NEXT point is closer than the CURRENT point.
+        # We loop this a few times (search_window) to allow the index to "catch up" 
+        # if the car is moving fast, but we never look backwards.
+        
+        search_window = 50 # How many points ahead can we skip in one frame?
+        
+        for _ in range(search_window):
+            current_dist = self.get_dist_sq(self.cur_idx)
+            
+            # Calculate next index
+            next_idx = self.cur_idx + 1
+            
+            # Handle Loop / End of Track
+            if self.is_loop:
+                next_idx = next_idx % len(self.global_rx)
+            elif next_idx >= len(self.global_rx):
+                # End of track reached, stay at last point
+                break 
 
-        # Publish Path for visualization (RViz / EUFSIM)
-        self._publish_path(xs, ys, msg.header.stamp, msg.header.frame_id or "map")
+            next_dist = self.get_dist_sq(next_idx)
 
-        # Publish raw x,y arrays for use by your controller node
-        self._publish_points(xs, ys)
+            # If the next point is closer than the current one, advance!
+            # This effectively "slides" the window forward relative to car motion.
+            if next_dist < current_dist:
+                self.cur_idx = next_idx
+            else:
+                # We are at the local minimum (closest point), stop searching.
+                break
 
-    def _publish_path(self, xs: np.ndarray, ys: np.ndarray, stamp, frame_id: str):
+        # --- PUBLISH PATH ---
         path_msg = Path()
-        path_msg.header = Header()
-        path_msg.header.stamp = stamp
-        path_msg.header.frame_id = frame_id
+        path_msg.header.frame_id = 'map' 
+        path_msg.header.stamp = self.get_clock().now().to_msg()
 
-        for x, y in zip(xs, ys):
-            ps = PoseStamped()
-            ps.header = path_msg.header
-            ps.pose.position.x = float(x)
-            ps.pose.position.y = float(y)
-            ps.pose.position.z = 0.0
-            # Orientation can be left as identity for visualization
-            path_msg.poses.append(ps)
+        local_xs = []
+        local_ys = []
+        
+        cos_yaw = math.cos(self.yaw)
+        sin_yaw = math.sin(self.yaw)
+
+        # Extract strictly sequential points starting from our updated cur_idx
+        for i in range(self.num_points):
+            idx = self.cur_idx + i
+            
+            if self.is_loop:
+                idx = idx % len(self.global_rx)
+            else:
+                if idx >= len(self.global_rx):
+                    break # Don't publish past the end of the line
+            
+            gx = self.global_rx[idx]
+            gy = self.global_ry[idx]
+
+            # Transform to local frame (Simulating Perception)
+            # (Local X is forward, Local Y is Left)
+            dx = gx - self.cx
+            dy = gy - self.cy
+            
+            # Rotation matrix for Global to Local
+            lx = cos_yaw * dx + sin_yaw * dy
+            ly = -sin_yaw * dx + cos_yaw * dy
+            
+            local_xs.append(lx)
+            local_ys.append(ly)
+            
+            pose = PoseStamped()
+            pose.header = path_msg.header
+            pose.pose.position.x = gx
+            pose.pose.position.y = gy
+            pose.pose.position.z = 0.0
+            
+            # Simple orientation calculation (point towards next point)
+            # We calculate heading based on i and i+1
+            idx_next = idx + 1
+            if self.is_loop: idx_next %= len(self.global_rx)
+            
+            if idx_next < len(self.global_rx):
+                nx = self.global_rx[idx_next]
+                ny = self.global_ry[idx_next]
+                heading = math.atan2(ny - gy, nx - gx)
+            else:
+                heading = 0.0 # End of path default
+
+            # Convert yaw to quaternion
+            cy = math.cos(heading * 0.5)
+            sy = math.sin(heading * 0.5)
+            pose.pose.orientation.w = cy
+            pose.pose.orientation.z = sy
+            
+            path_msg.poses.append(pose)
 
         self.path_pub.publish(path_msg)
 
-    def _publish_points(self, xs: np.ndarray, ys: np.ndarray):
-        """
-        Publish as Float64MultiArray: [x0, x1, ..., xN, y0, y1, ..., yN]
-        Your control script can split it back into route_x, route_y.
-        """
-        data = np.concatenate((xs, ys))
-        msg = Float64MultiArray()
-        msg.data = data.tolist()
-        self.points_pub.publish(msg)
-
+        if self.visualize:
+            self.ln.set_data(local_xs, local_ys)
+            self.plt.pause(0.001)
 
 def main(args=None):
     rclpy.init(args=args)
-    node = LocalPathPlanner()
+    node = PathPublisher()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
-    node.destroy_node()
-    rclpy.shutdown()
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
