@@ -9,7 +9,6 @@ from control.control_utils import (
     PID,
     preprocess_path,
     local_closest_index,
-    compute_signed_curvature,
     path_heading,
     cross_track_error,
 )
@@ -41,25 +40,31 @@ STOP_SPEED_THRESHOLD = 0.1
 
 
 # ==============================
-# STANLEY CONTROLLER
+# STANLEY CONTROLLER (LATERAL)
 # ==============================
 
-def stanley_steering(cx, cy, yaw, speed, route_x, route_y, cur_idx, loop=False):
+def stanley_steering(cx, cy, yaw, speed, route_x, route_y, cur_idx):
     """
     delta = heading_error + atan2(k * e_lat, v + eps)
     """
 
-    psi_ref = path_heading(route_x, route_y, cur_idx, loop=loop)
+    # Path heading at closest index
+    psi_ref = path_heading(route_x, route_y, cur_idx)
 
+    # Heading error wrapped to [-pi, pi]
     heading_error = psi_ref - yaw
     heading_error = math.atan2(math.sin(heading_error), math.cos(heading_error))
 
-    e_lat, _ = cross_track_error(cx, cy, route_x, route_y, cur_idx, loop=loop)
+    # Cross track error (signed)
+    e_lat, _ = cross_track_error(cx, cy, route_x, route_y, cur_idx)
 
+    # Avoid division by zero
     v_ctrl = max(speed, STANLEY_EPS)
 
+    # Stanley steering law
     delta = heading_error + math.atan2(STANLEY_K * e_lat, v_ctrl)
 
+    # Saturation
     delta = max(-MAX_STEER_RAD, min(MAX_STEER_RAD, delta))
 
     return delta
@@ -74,7 +79,7 @@ class StanleyPIDController:
     def __init__(self):
         rclpy.init()
 
-        # ✅ SAME ROSInterface (UNCHANGED)
+        # ✅ ROSInterface (odom, local path, cmd)
         self.node = ROSInterface()
 
         # ✅ Spin ROS in background
@@ -82,7 +87,7 @@ class StanleyPIDController:
         executor.add_node(self.node)
         threading.Thread(target=executor.spin, daemon=True).start()
 
-        # ✅ NEW: Subscribe to velocity profiler output
+        # ✅ Subscribe to velocity profiler output
         self.desired_velocity = 0.0
         self.node.create_subscription(
             Float32,
@@ -98,13 +103,11 @@ class StanleyPIDController:
         self.cur_idx = 0
         self.last_t = time.perf_counter()
 
-        input("Press Enter to start Stanley + PID control (using velocity profiler)...\n")
-
+        input("✅ Press Enter to start CLEAN Stanley + PID control...\n")
 
     def velocity_cb(self, msg):
         """Target speed from velocity profiler node"""
         self.desired_velocity = float(msg.data)
-
 
     def run(self):
         while rclpy.ok():
@@ -118,7 +121,7 @@ class StanleyPIDController:
                 continue
 
             # ---------------------------------
-            # 2) GET LOCAL PATH (UNCHANGED)
+            # 2) GET LOCAL PATH
             # ---------------------------------
             route_x, route_y = self.node.get_local_path()
 
@@ -127,8 +130,8 @@ class StanleyPIDController:
                 time.sleep(0.01)
                 continue
 
-            route_x = route_x * SCALING_FACTOR
-            route_y = route_y * SCALING_FACTOR
+            route_x = np.asarray(route_x, dtype=float) * SCALING_FACTOR
+            route_y = np.asarray(route_y, dtype=float) * SCALING_FACTOR
 
             route_x, route_y, route_s, route_len = preprocess_path(
                 route_x, route_y, loop=ROUTE_IS_LOOP
@@ -138,20 +141,15 @@ class StanleyPIDController:
             # 3) TIME UPDATE
             # ---------------------------------
             now = time.perf_counter()
-            dt = now - self.last_t
-            if dt <= 0.0:
-                dt = 0.02
+            dt = max(now - self.last_t, 0.01)
             self.last_t = now
 
             # ---------------------------------
             # 4) CLOSEST POINT ON PATH
             # ---------------------------------
             self.cur_idx = local_closest_index(
-                (cx, cy), route_x, route_y, self.cur_idx, loop=ROUTE_IS_LOOP
+                (cx, cy), route_x, route_y, self.cur_idx
             )
-
-            if np.ndim(self.cur_idx) > 0:
-                self.cur_idx = int(self.cur_idx[0])
             self.cur_idx = int(self.cur_idx)
 
             # ---------------------------------
@@ -159,17 +157,14 @@ class StanleyPIDController:
             # ---------------------------------
             steering_angle = stanley_steering(
                 cx, cy, yaw, speed,
-                route_x, route_y, self.cur_idx,
-                loop=ROUTE_IS_LOOP
+                route_x, route_y,
+                self.cur_idx
             )
 
             # ---------------------------------
-            # 6) LONGITUDINAL CONTROL (PID)
+            # 6) LONGITUDINAL CONTROL (FROM PROFILER)
             # ---------------------------------
-            # ✅ Target speed from VELOCITY PROFILER NODE
             target_speed = self.desired_velocity
-
-            # ✅ Actual speed from ODOMETRY
             v_err = target_speed - speed
 
             if v_err >= 0:
@@ -180,7 +175,7 @@ class StanleyPIDController:
                 accel_cmd = max(MAX_BRAKE, v_err)
 
             # ---------------------------------
-            # 7) ACTUATION (UNCHANGED INTERFACE)
+            # 7) SEND COMMAND TO SIMULATOR
             # ---------------------------------
             self.node.send_command(
                 steering_angle,
@@ -189,10 +184,14 @@ class StanleyPIDController:
             )
 
             # ---------------------------------
-            # 8) STOP CONDITION (OPTIONAL)
+            # 8) STOP CONDITION
             # ---------------------------------
-            if (not ROUTE_IS_LOOP) and self.cur_idx >= len(route_x) - 1 and speed < STOP_SPEED_THRESHOLD:
-                print("✅ Reached end of path and stopped.")
+            if (
+                (not ROUTE_IS_LOOP)
+                and self.cur_idx >= len(route_x) - 1
+                and speed < STOP_SPEED_THRESHOLD
+            ):
+                print(" Stanley: Reached end of path and stopped.")
                 break
 
             time.sleep(0.005)

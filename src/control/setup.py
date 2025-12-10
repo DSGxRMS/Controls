@@ -20,8 +20,11 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'run_control = control.control_loop:main',
-            'control_plotter = control.Control_plotter:main',
+            'run_ppc = control.PPC:main',
+            'run_lqr = control.LQR:main',
+            'run_stanley = control.Stanley:main',
+            'run_velprofile = control.Vel_pro:main'
+            'control_plotter = control.realtime_plot:main',
             'path_planner = control.path_planner_node:main',
         ],
     },
