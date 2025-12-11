@@ -222,7 +222,9 @@ class LQRFullController:
 # ======================================
 # ENTRY POINT
 # ======================================
-
-if __name__ == "__main__":
+def main():
     ctrl = LQRFullController()
     ctrl.run()
+    
+if __name__ == "__main__":
+    main()

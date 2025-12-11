@@ -9,16 +9,23 @@ import numpy as np
 import math
 import os
 import sys
-
+from pathlib import Path as SysPath
 # We will implement necessary math inline to ensure this script is self-contained
 # and meets the specific sequential requirement without external dependency behavior.
+
+
+
+CSVDIR = SysPath(__file__).parent.parent.parent.parent / 'src' / 'tracks'
+CSVPATH = CSVDIR / 'peanut.csv' 
+
+
 
 class PathPublisher(Node):
     def __init__(self):
         super().__init__('pp_publisher')
 
         # Parameters
-        self.declare_parameter('path_file', 'pathpoints_shifted.csv')
+        self.declare_parameter('path_file', CSVPATH.as_posix())
         self.declare_parameter('num_points', 7) # Increased default for better perception viz
         self.declare_parameter('interval_m', 0.5) 
         self.declare_parameter('publish_rate', 1.0) # Faster rate for smooth updates

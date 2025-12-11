@@ -203,6 +203,11 @@ class StanleyPIDController:
 # ENTRY POINT
 # ==============================
 
-if __name__ == "__main__":
+def main():
     ctrl = StanleyPIDController()
     ctrl.run()
+
+
+
+if __name__ == "__main__":
+    main()

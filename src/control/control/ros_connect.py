@@ -31,7 +31,7 @@ class ROSInterface(Node):
 
         # ---- Parameters (can override via launch/CLI) ----
         self.declare_parameter("odom_topic", "/ground_truth/odom")
-        self.declare_parameter("path_topic", "/local_path_points")
+        self.declare_parameter("path_topic", "/path_planned")
         self.declare_parameter("cmd_topic", "/cmd")
         self.declare_parameter("qos_best_effort", True)
 

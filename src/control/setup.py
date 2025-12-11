@@ -1,11 +1,11 @@
-from setuptools import setup, find_packages
+from setuptools import setup
 
 package_name = 'control'
 
 setup(
     name=package_name,
     version='0.0.0',
-    packages=find_packages(),
+    packages=[package_name],
     data_files=[
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
@@ -13,19 +13,19 @@ setup(
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='root',
-    maintainer_email='root@todo.todo',
+    maintainer='armaanm',
+    maintainer_email='armaanmahajanbg@gmail.com',
     description='TODO: Package description',
     license='TODO: License declaration',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'run_ppc = control.PPC:main',
-            'run_lqr = control.LQR:main',
-            'run_stanley = control.Stanley:main',
-            'run_velprofile = control.Vel_pro:main'
-            'control_plotter = control.realtime_plot:main',
-            'path_planner = control.path_planner_node:main',
+            'pp_node = control.pp_node:main',
+            'run_lqr = control.lqr:main',
+            'run_ppc = control.ppc:main',
+            'run_stanley = control.stanley:main',
+            'vel_profiler = control.velocity_profiler:main',
+            'control_plot = control.control_plot:main',
         ],
     },
 )
