@@ -4,31 +4,25 @@ import rclpy
 from rclpy.node import Node
 from nav_msgs.msg import Odometry, Path
 from geometry_msgs.msg import PoseStamped
+from launch_ros.substitutions import FindPackageShare
 import pandas as pd
 import numpy as np
 import math
 import os
 import sys
-from pathlib import Path as SysPath
+
 # We will implement necessary math inline to ensure this script is self-contained
 # and meets the specific sequential requirement without external dependency behavior.
-
-
-
-CSVDIR = SysPath(__file__).parent.parent.parent.parent / 'src' / 'tracks'
-CSVPATH = CSVDIR / 'peanut.csv' 
-
-
 
 class PathPublisher(Node):
     def __init__(self):
         super().__init__('pp_publisher')
 
         # Parameters
-        self.declare_parameter('path_file', CSVPATH.as_posix())
-        self.declare_parameter('num_points', 7) # Increased default for better perception viz
+        self.declare_parameter('path_file', 'small_track.csv')
+        self.declare_parameter('num_points', 8) # Increased default for better perception viz
         self.declare_parameter('interval_m', 0.5) 
-        self.declare_parameter('publish_rate', 1.0) # Faster rate for smooth updates
+        self.declare_parameter('publish_rate', 3.0) # Faster rate for smooth updates
         self.declare_parameter('loop', False)
 
         path_file = self.get_parameter('path_file').get_parameter_value().string_value
@@ -39,8 +33,9 @@ class PathPublisher(Node):
 
         # Resolve path file path
         if not os.path.isabs(path_file):
-            base_dir = os.path.dirname(os.path.abspath(__file__))
-            path_file = os.path.join(base_dir, path_file)
+           
+            pkg_share = FindPackageShare('control_v2').find('control_v2')
+            path_file = os.path.join(pkg_share, path_file)
 
         self.get_logger().info(f"Loading path from {path_file}")
         
@@ -133,7 +128,7 @@ class PathPublisher(Node):
         # We loop this a few times (search_window) to allow the index to "catch up" 
         # if the car is moving fast, but we never look backwards.
         
-        search_window = 50 # How many points ahead can we skip in one frame?
+        search_window = 25 # How many points ahead can we skip in one frame?
         
         for _ in range(search_window):
             current_dist = self.get_dist_sq(self.cur_idx)

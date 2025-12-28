@@ -13,8 +13,8 @@ SEARCH_BACK = 10
 SEARCH_FWD = 250
 MAX_STEP = 60
 
-WHEELBASE_M = 1.5
-MAX_STEER_RAD = math.pi/2  # 90 degrees
+WHEELBASE_M = 1.58
+MAX_STEER_RAD = 0.52  # 30 degrees
 LD_BASE = 3.5
 LD_GAIN = 0.6
 LD_MIN = 2.0
@@ -248,3 +248,190 @@ class PIDRange:
         self._prev_err = err
         u = self.kp * err + self.ki * self._i + self.kd * d
         return max(self.out_min, min(self.out_max, u))
+
+# -------------------- Predictive Control Functions --------------------
+
+def predict_bicycle_state(x, y, yaw, v, steering, wheelbase, dt):
+    """
+    Predicts the next state of the vehicle using the Kinematic Bicycle Model.
+    dt: Prediction horizon in SIMULATION seconds.
+    """
+    # If steering is very small, treat as straight line to avoid division by zero
+    if abs(steering) < 1e-4:
+        x_new = x + v * math.cos(yaw) * dt
+        y_new = y + v * math.sin(yaw) * dt
+        yaw_new = yaw
+    else:
+        # Bicycle model integration (Exact solution for constant turn rate)
+        tan_delta = math.tan(steering)
+        # Turn radius
+        r = wheelbase / tan_delta 
+        # Angular velocity * dt = change in heading
+        beta = (v / r) * dt 
+
+        # Center of rotation
+        cx = x - r * math.sin(yaw)
+        cy = y + r * math.cos(yaw)
+        
+        yaw_new = yaw + beta
+        x_new = cx + r * math.sin(yaw_new)
+        y_new = cy - r * math.cos(yaw_new)
+        
+    return x_new, y_new, yaw_new
+
+def get_steering_to_point(px, py, yaw, tx, ty, wheelbase):
+    """
+    Calculates the Pure Pursuit steering angle required to hit a specific target point.
+    """
+    dx = tx - px
+    dy = ty - py
+    
+    # Transform target to vehicle frame
+    lx = dx * math.cos(yaw) + dy * math.sin(yaw)
+    ly = -dx * math.sin(yaw) + dy * math.cos(yaw)
+    
+    dist_sq = lx**2 + ly**2
+    
+    # Avoid singularities
+    if dist_sq < 0.01: 
+        return 0.0
+    
+    # Curvature = 2y / L^2
+    curvature = 2.0 * ly / dist_sq
+    
+    # Steering = atan(L * curvature)
+    steering = math.atan(wheelbase * curvature)
+    return steering
+
+def calculate_trajectory_cost(pred_x, pred_y, pred_yaw, path_x, path_y, path_yaws, candidate_idx):
+    """
+    Scores a predicted state against the actual path.
+    Lower score is better.
+    """
+    # 1. Search locally around the candidate index for the closest path point
+    # We do not search the whole path, just around where we expect to be
+    search_radius = 20 
+    start = max(0, candidate_idx - 5)
+    end = min(len(path_x), candidate_idx + search_radius)
+    
+    if start >= end:
+        return float('inf'), candidate_idx
+
+    # Calculate squared distances to path points
+    dx = path_x[start:end] - pred_x
+    dy = path_y[start:end] - pred_y
+    dists_sq = dx**2 + dy**2
+    
+    # Find closest match
+    local_min_idx = np.argmin(dists_sq)
+    match_idx = start + local_min_idx
+    
+    # 2. Cross Track Error (Distance cost)
+    error_dist = math.sqrt(dists_sq[local_min_idx])
+    
+    # 3. Heading Error (Alignment cost)
+    # Get path heading at the matched point
+    path_theta = path_yaws[match_idx] if match_idx < len(path_yaws) else 0.0
+    
+    # Normalized angle difference
+    diff = pred_yaw - path_theta
+    error_yaw = abs(math.atan2(math.sin(diff), math.cos(diff)))
+    
+    # 4. Weighted Cost Function
+    # w_cte: Penalty for being away from the line
+    # w_head: Penalty for not pointing along the line
+    w_cte = 1.0
+    w_head = 2.5 
+    
+    cost = (w_cte * error_dist) + (w_head * error_yaw)
+    return cost, match_idx
+
+# -------------------- Physics-Based Velocity Profiler --------------------
+
+def generate_velocity_profile(route_x, route_y, yaw_arr=None):
+    """
+    Generates a velocity profile based on vehicle physics (Friction + Aero)
+    and input constraints (Accel/Braking limits).
+    """
+    # --- Vehicle Physical Constants (From your specs) ---
+    MASS = 225.0
+    G = 9.81
+    MU = 1.60       # Tire D coefficient
+    C_DOWN = 1.9    # Downforce coefficient
+    
+    # Input Constraints
+    V_MAX_HARD = 30.0   # m/s
+    ACCEL_MAX = 3.0     # m/s^2
+    DECEL_MAX = -10.0   # m/s^2 (Note: Negative)
+    
+    # 1. Pre-process path
+    dx = np.gradient(route_x)
+    dy = np.gradient(route_y)
+    dist = np.hypot(dx, dy)
+    dist = np.where(dist < 1e-6, 1e-6, dist) # Avoid div/0
+    
+    # Calculate Curvature (Kappa)
+    ddx = np.gradient(dx)
+    ddy = np.gradient(dy)
+    curvature = (dx * ddy - dy * ddx) / np.power(dx*dx + dy*dy, 1.5)
+    curvature = np.abs(curvature)
+    
+    # 2. PASS 1: Lateral Physics Limit (The "Ceiling")
+    # Balance: Centripetal Force = Max Friction Force
+    # m * v^2 * k = MU * (m * g + C_DOWN * v^2)
+    # v^2 * (m * k - MU * C_DOWN) = MU * m * g
+    
+    v_limit = np.zeros_like(curvature)
+    
+    for i in range(len(curvature)):
+        k = max(curvature[i], 1e-6)
+        
+        # Denominator: (m * k) - (mu * C_down)
+        # If this is negative or zero, it means Downforce > Centripetal Force
+        # effectively giving infinite grip (limited only by engine V_MAX)
+        denom = (MASS * k) - (MU * C_DOWN)
+        
+        if denom <= 0:
+            v_phys = V_MAX_HARD
+        else:
+            numerator = MU * MASS * G
+            v_phys = math.sqrt(numerator / denom)
+            
+        v_limit[i] = min(V_MAX_HARD, v_phys)
+
+    # 3. PASS 2: Backward Pass (Braking Zones)
+    # Ensure we can stop in time for the corners
+    # v_i = sqrt(v_{i+1}^2 + 2 * a_brake * distance)
+    # Note: DECEL_MAX is negative, so (-2 * decel) adds to velocity
+    
+    v_backward = v_limit.copy()
+    # We assume the end speed is 0 if not looping, or same as start if looping
+    v_backward[-1] = 0.0 
+    
+    for i in range(len(v_limit) - 2, -1, -1):
+        ds = np.hypot(route_x[i+1]-route_x[i], route_y[i+1]-route_y[i])
+        max_reachable_sq = v_backward[i+1]**2 - (2 * DECEL_MAX * ds)
+        v_backward[i] = min(v_limit[i], math.sqrt(max_reachable_sq))
+
+    # 4. PASS 3: Forward Pass (Acceleration Limits)
+    # Ensure we don't accelerate faster than the engine allows
+    
+    v_final = v_backward.copy()
+    v_final[0] = 0.0 # Start from stop
+    
+    for i in range(1, len(v_limit)):
+        ds = np.hypot(route_x[i]-route_x[i-1], route_y[i]-route_y[i-1])
+        max_reachable_sq = v_final[i-1]**2 + (2 * ACCEL_MAX * ds)
+        v_final[i] = min(v_backward[i], math.sqrt(max_reachable_sq))
+        
+    # 5. Smoothing (Simulated Jerk Limiting)
+    # A simple moving average removes sharp jagged edges in the accel profile
+    window_size = 5
+    kernel = np.ones(window_size) / window_size
+    v_smooth = np.convolve(v_final, kernel, mode='same')
+    
+    # Restore endpoints after smoothing
+    v_smooth[0] = v_final[0]
+    v_smooth[-1] = v_final[-1]
+    
+    return v_smooth
