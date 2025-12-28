@@ -36,11 +36,12 @@ class TelemetryVisualizer:
         # Setup standard matplotlib styling for scientific plotting
         plt.style.use('seaborn-v0_8-darkgrid' if 'seaborn-v0_8-darkgrid' in plt.style.available else 'fast')
         
-        self.fig = plt.figure(figsize=(16, 9))
+        self.fig = plt.figure(figsize=(14, 9))
         self.fig.canvas.manager.set_window_title("Autonomous Control Telemetry")
         
         # Grid layout: 2 columns, left is map (large), right is errors (stacked)
-        gs = self.fig.add_gridspec(3, 2, width_ratios=[2.5, 1], height_ratios=[1, 1, 1], hspace=0.35, wspace=0.2)
+        # 5 rows: Velocity, Steering, Cross Track Error, Heading Error, HUD
+        gs = self.fig.add_gridspec(5, 2, width_ratios=[2.5, 1], height_ratios=[1, 1, 1, 1, 0.8], hspace=0.4, wspace=0.2)
         
         # Main path plot (occupies all rows of column 0)
         self.ax_path = self.fig.add_subplot(gs[:, 0])
@@ -51,9 +52,14 @@ class TelemetryVisualizer:
         # Steering error plot (row 1, column 1)
         self.ax_steer = self.fig.add_subplot(gs[1, 1])
         
-        # Text/HUD area or empty slot (row 2, column 1) - Reserved for future or legend
-        # For now, we put a large textual status here
-        self.ax_stat = self.fig.add_subplot(gs[2, 1])
+        # Cross Track Error plot (row 2, column 1)
+        self.ax_cte = self.fig.add_subplot(gs[2, 1])
+        
+        # Heading Error plot (row 3, column 1)
+        self.ax_heading = self.fig.add_subplot(gs[3, 1])
+        
+        # Text/HUD area (row 4, column 1)
+        self.ax_stat = self.fig.add_subplot(gs[4, 1])
         self.ax_stat.axis('off')
 
         self.setup_plot()
@@ -111,8 +117,22 @@ class TelemetryVisualizer:
         self.steer_ref_line, = self.ax_steer.plot([], [], 'k-', linewidth=0.5, alpha=0.3) # Zero line
         self.ax_steer.grid(True, linestyle=':', alpha=0.6)
 
+        # ===== Cross Track Error Plot =====
+        self.ax_cte.set_title("Cross Track Error", fontsize=10, fontweight='bold')
+        self.ax_cte.set_ylabel("CTE (m)")
+        self.cte_line, = self.ax_cte.plot([], [], 'c-', linewidth=2, label='CTE')
+        self.cte_ref_line, = self.ax_cte.plot([], [], 'k-', linewidth=0.5, alpha=0.3) # Zero line
+        self.ax_cte.grid(True, linestyle=':', alpha=0.6)
+
+        # ===== Heading Error Plot =====
+        self.ax_heading.set_title("Heading Error", fontsize=10, fontweight='bold')
+        self.ax_heading.set_ylabel("Error (rad)")
+        self.heading_err_line, = self.ax_heading.plot([], [], 'orange', linewidth=2, label='Heading Err')
+        self.heading_ref_line, = self.ax_heading.plot([], [], 'k-', linewidth=0.5, alpha=0.3) # Zero line
+        self.ax_heading.grid(True, linestyle=':', alpha=0.6)
+
         # ===== HUD Stats Text =====
-        self.hud_text = self.ax_stat.text(0.1, 0.5, "Initializing...", fontsize=14, family='monospace', va='center')
+        self.hud_text = self.ax_stat.text(0.1, 0.5, "Initializing...", fontsize=12, family='monospace', va='center')
 
     def update_path_data(self, route_x, route_y, route_v):
         """Updates the global path line with new coordinates."""
@@ -122,7 +142,7 @@ class TelemetryVisualizer:
         self.path_line.set_segments(segments)
         self.path_line.set_array(route_v)
 
-    def log_state(self, x, y, yaw, speed, steering_cmd, lookahead_pt, future_pts, arc_pts, target_speed):
+    def log_state(self, x, y, yaw, speed, steering_cmd, lookahead_pt, future_pts, arc_pts, target_speed, cross_track_error=0.0, heading_error=0.0):
         """
         Thread-safe logging of new state.
         """
@@ -134,7 +154,9 @@ class TelemetryVisualizer:
             'steering': steering_cmd,
             'lookahead': lookahead_pt,
             'arc': arc_pts,
-            'target_speed': target_speed
+            'target_speed': target_speed,
+            'cte': cross_track_error,
+            'heading_err': heading_error
         }
         
         self.telemetry.append(state)
@@ -174,6 +196,11 @@ class TelemetryVisualizer:
         self.vehicle_quiver.set_offsets([data['x'], data['y']])
         self.vehicle_quiver.set_UVC(np.cos(data['yaw']), np.sin(data['yaw']))
 
+        # Auto-center map on vehicle
+        view_radius = 15  # meters
+        self.ax_path.set_xlim(data['x'] - view_radius, data['x'] + view_radius)
+        self.ax_path.set_ylim(data['y'] - view_radius, data['y'] + view_radius)
+
         # 2. Update History Trace
         # Convert deque to list only for plotting (fast enough for <1000 pts)
         trace_x = [p['x'] for p in self.telemetry]
@@ -211,10 +238,27 @@ class TelemetryVisualizer:
         self.steer_cmd_line.set_data(ts, steers)
         self.steer_ref_line.set_data([ts[0], ts[-1]], [0, 0])
 
+        # 5b. Update Cross Track Error Plot
+        cte_vals = [d['cte'] for d in recent_data]
+        self.cte_line.set_data(ts, cte_vals)
+        self.cte_ref_line.set_data([ts[0], ts[-1]], [0, 0])
+
+        # 5c. Update Heading Error Plot
+        heading_errs = [d['heading_err'] for d in recent_data]
+        self.heading_err_line.set_data(ts, heading_errs)
+        self.heading_ref_line.set_data([ts[0], ts[-1]], [0, 0])
+
         # 6. Smart Axis Rescaling
         if ts:
-            self.ax_vel.set_xlim(ts[0], ts[-1])
-            self.ax_steer.set_xlim(ts[0], ts[-1])
+            # Prevent singular transformation if timestamps are identical
+            t_min, t_max = ts[0], ts[-1]
+            if t_max <= t_min:
+                t_max = t_min + 0.1
+
+            self.ax_vel.set_xlim(t_min, t_max)
+            self.ax_steer.set_xlim(t_min, t_max)
+            self.ax_cte.set_xlim(t_min, t_max)
+            self.ax_heading.set_xlim(t_min, t_max)
             
             # Y-Axis Auto-scaling with padding
             v_min, v_max = min(v_act + v_tgt), max(v_act + v_tgt)
@@ -222,13 +266,24 @@ class TelemetryVisualizer:
             
             s_min, s_max = min(steers), max(steers)
             self.ax_steer.set_ylim(min(-0.5, s_min - 0.2), max(0.5, s_max + 0.2))
+            
+            # CTE scaling
+            cte_min, cte_max = min(cte_vals), max(cte_vals)
+            cte_pad = max(0.5, (cte_max - cte_min) * 0.2)
+            self.ax_cte.set_ylim(cte_min - cte_pad, cte_max + cte_pad)
+            
+            # Heading error scaling
+            he_min, he_max = min(heading_errs), max(heading_errs)
+            he_pad = max(0.2, (he_max - he_min) * 0.2)
+            self.ax_heading.set_ylim(he_min - he_pad, he_max + he_pad)
 
         # 7. Update HUD Text
         status_str = (
             f"TIME:  {data['t']:.1f} s\n"
             f"SPEED: {data['speed']:.2f} / {data['target_speed']:.2f} m/s\n"
             f"STEER: {data['steering']:.2f} (norm)\n"
-            f"POS:   {data['x']:.1f}, {data['y']:.1f}"
+            f"CTE:   {data['cte']:.3f} m\n"
+            f"HEAD:  {data['heading_err']:.3f} rad"
         )
         self.hud_text.set_text(status_str)
 

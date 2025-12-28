@@ -1,3 +1,5 @@
 build/
 install/
 log/
+src\control_v2\control_v2\__pycache__
+src\control\control\__pycache__
