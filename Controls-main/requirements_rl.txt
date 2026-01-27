@@ -1,0 +1,25 @@
+# Requirements for HJB-RL Controller
+
+# Deep Learning
+torch>=2.0.0
+torchvision>=0.15.0
+
+# RL Environment
+gymnasium>=0.29.0
+
+# Scientific Computing
+numpy>=1.24.0
+scipy>=1.10.0
+
+# Visualization
+matplotlib>=3.7.0
+
+# Data Processing
+pandas>=2.0.0
+
+# Existing ROS2 dependencies (should already be installed)
+# rclpy
+# std_msgs
+# nav_msgs
+# geometry_msgs
+# visualization_msgs
