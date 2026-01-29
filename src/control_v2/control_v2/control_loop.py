@@ -13,10 +13,10 @@ from control_v2.telemetryplot import TelemetryVisualizer, generate_turning_arc
 # ================================
 # Control Constants
 # ================================
-MAX_VELOCITY = 4.0
+MAX_VELOCITY = 11.0
 VEL_LIMIT_FACTOR = 0.8   # Slow down more in corners to prevent overshoot
 ROUTE_IS_LOOP = False
-STOP_SPEED_THRESHOLD = 0.1
+STOP_SPEED_THRESHOLD = -10.1
 WHEELBASE_M = 1.5 
 MAX_STEER_RAD = 0.52 
 
@@ -27,7 +27,7 @@ SEARCH_END_IDX = 12      # Reduced search horizon to prevent cutting corners too
 STEP_SIZE = 1            # Check every point for maximum smoothness
 
 # Stability Constants
-STEER_ALPHA = 0.2        # Low Pass Filter: 0.2 = Smooth/Slow, 1.0 = Instant/Jittery
+STEER_ALPHA = 0.3        # Low Pass Filter: 0.2 = Smooth/Slow, 1.0 = Instant/Jittery
 CONTINUITY_WEIGHT = 0.5  # Cost penalty per index jump (prevents teleporting)
 SATURATION_WEIGHT = 15.0 # Cost penalty for exceeding steering limits
 
